@@ -1,0 +1,184 @@
+name: Check and Block Repos Without Code Style Workflow
+
+on:
+  schedule:
+    # Ejecutar todos los lunes a las 9:00 AM
+    - cron: '0 9 * * 1'
+  workflow_dispatch: # Permite ejecución manual
+
+jobs:
+  check-and-block-repos:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Check and block repositories without code-style-check.yml
+        env:
+          GH_TOKEN: ${{ secrets.ORG_TOKEN }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          echo "# Reporte de Bloqueo de Repositorios" > report.md
+          echo "Fecha: $(date)" >> report.md
+          echo "" >> report.md
+          
+          missing_repos=()
+          blocked_repos=()
+          already_blocked=()
+          compliant_repos=()
+          
+          # Obtener lista de todos los repositorios de la organización
+          repos=$(gh repo list "$ORG_NAME" --limit 1000 --json name,isArchived --jq '.[] | select(.isArchived == false) | .name')
+          
+          total=0
+          missing=0
+          
+          for repo in $repos; do
+            total=$((total + 1))
+            echo "========================================="
+            echo "Verificando: $ORG_NAME/$repo"
+            
+            # Verificar si existe el archivo code-style-check.yml
+            if gh api "repos/$ORG_NAME/$repo/contents/.github/workflows/code-style-check.yml" >/dev/null 2>&1; then
+              compliant_repos+=("$repo")
+              echo "✅ Tiene code-style-check.yml"
+              
+              # Opcional: Remover bloqueo si ya está conforme
+              echo "  Verificando si tiene restricciones previas..."
+              protection=$(gh api "repos/$ORG_NAME/$repo/branches/main/protection" 2>/dev/null || echo "")
+              
+              if [ -n "$protection" ]; then
+                echo "  ℹ️  El repo tiene protecciones configuradas (manteniéndolas)"
+              fi
+              
+            else
+              missing_repos+=("$repo")
+              missing=$((missing + 1))
+              echo "❌ NO tiene code-style-check.yml - APLICANDO BLOQUEO"
+              
+              # Verificar si ya tiene protección de rama
+              has_protection=$(gh api "repos/$ORG_NAME/$repo/branches/main/protection" 2>/dev/null && echo "yes" || echo "no")
+              
+              if [ "$has_protection" = "yes" ]; then
+                echo "  ℹ️  El repo ya tiene protecciones (actualizando)"
+                already_blocked+=("$repo")
+              fi
+              
+              # Aplicar protección de rama en main/master
+              for branch in main master; do
+                # Verificar si la rama existe
+                if gh api "repos/$ORG_NAME/$repo/branches/$branch" >/dev/null 2>&1; then
+                  echo "  🔒 Aplicando protección en rama: $branch"
+                  
+                  # Configurar protección de rama
+                  gh api \
+                    --method PUT \
+                    "repos/$ORG_NAME/$repo/branches/$branch/protection" \
+                    -f required_status_checks[strict]=true \
+                    -f required_status_checks[contexts][]=code-style-check \
+                    -f enforce_admins=false \
+                    -f required_pull_request_reviews[required_approving_review_count]=1 \
+                    -f required_pull_request_reviews[dismiss_stale_reviews]=true \
+                    -f restrictions=null \
+                    2>/dev/null && echo "  ✅ Protección aplicada en $branch" || echo "  ⚠️  Error al aplicar protección en $branch"
+                  
+                  blocked_repos+=("$repo")
+                  break
+                fi
+              done
+              
+              # Crear issue en el repositorio bloqueado
+              echo "  📝 Creando issue de notificación..."
+              gh issue create \
+                --repo "$ORG_NAME/$repo" \
+                --title "🚨 Repositorio bloqueado: Falta code-style-check.yml" \
+                --body "## ⚠️ Repositorio Bloqueado
+
+Este repositorio ha sido bloqueado porque **no tiene configurado el workflow obligatorio** \`code-style-check.yml\`.
+
+### 📋 Acciones requeridas:
+
+1. Crear el archivo \`.github/workflows/code-style-check.yml\`
+2. Configurar las validaciones de estilo de código requeridas
+3. Una vez creado, las protecciones se mantendrán pero permitirán merges con el check pasando
+
+### 🔒 Restricciones aplicadas:
+
+- ✅ Se requiere al menos 1 revisión aprobada en PRs
+- ✅ Se requiere el status check \`code-style-check\` pasando
+- ✅ Se descartan aprobaciones obsoletas cuando hay nuevos commits
+
+### 📚 Recursos:
+
+- [Documentación de GitHub Actions](https://docs.github.com/en/actions)
+- Contacta al equipo de DevOps para plantillas
+
+---
+*Este issue fue creado automáticamente por el workflow de cumplimiento de la organización.*" \
+                --label "compliance,blocked,urgent" \
+                2>/dev/null && echo "  ✅ Issue creado" || echo "  ⚠️  No se pudo crear issue"
+            fi
+          done
+          
+          # Generar reporte
+          echo "" >> report.md
+          echo "## 🚨 Repositorios Bloqueados" >> report.md
+          echo "" >> report.md
+          
+          if [ ${#blocked_repos[@]} -gt 0 ]; then
+            for repo in "${blocked_repos[@]}"; do
+              echo "- ❌ [$repo](https://github.com/$ORG_NAME/$repo) - **BLOQUEADO**" >> report.md
+            done
+          else
+            echo "*No se bloquearon repositorios nuevos*" >> report.md
+          fi
+          
+          echo "" >> report.md
+          echo "## 📊 Resumen" >> report.md
+          echo "" >> report.md
+          echo "- **Total de repositorios activos:** $total" >> report.md
+          echo "- **Repositorios sin workflow:** $missing" >> report.md
+          echo "- **Repositorios bloqueados en esta ejecución:** ${#blocked_repos[@]}" >> report.md
+          echo "- **Repositorios ya bloqueados:** ${#already_blocked[@]}" >> report.md
+          echo "- **Repositorios conformes:** ${#compliant_repos[@]}" >> report.md
+          echo "- **Porcentaje de cumplimiento:** $(( ${#compliant_repos[@]} * 100 / total ))%" >> report.md
+          
+          echo "" >> report.md
+          echo "## ✅ Repositorios Conformes" >> report.md
+          echo "" >> report.md
+          
+          if [ ${#compliant_repos[@]} -gt 0 ]; then
+            for repo in "${compliant_repos[@]}"; do
+              echo "- ✅ [$repo](https://github.com/$ORG_NAME/$repo)" >> report.md
+            done
+          fi
+          
+          # Guardar resultados
+          echo "MISSING_COUNT=$missing" >> $GITHUB_ENV
+          echo "BLOCKED_COUNT=${#blocked_repos[@]}" >> $GITHUB_ENV
+      
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-blocking-report
+          path: report.md
+      
+      - name: Create Summary Issue
+        if: env.BLOCKED_COUNT > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "🚨 Bloqueo Aplicado: ${{ env.BLOCKED_COUNT }} repositorios bloqueados por falta de code-style-check.yml" \
+            --body-file report.md \
+            --label "workflow-compliance,blocked,urgent"
+      
+      - name: Send notification
+        if: env.BLOCKED_COUNT > 0
+        run: |
+          echo "========================================="
+          echo "🚨 ALERTA: Se bloquearon ${{ env.BLOCKED_COUNT }} repositorios"
+          echo "========================================="
+          cat report.md
+          echo "========================================="
