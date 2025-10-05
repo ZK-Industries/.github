@@ -8,7 +8,7 @@
   </p>
   
   <p>
-    🎮 Custom gaming solutions for MTA, FiveM, and more<br/>
+    🎮 Custom solutions for MTA<br/>
     💻 Modern web applications and platforms<br/>
     ⚡ Optimized for performance and scalability<br/>
     🛠️ Professional support and continuous updates<br/>
