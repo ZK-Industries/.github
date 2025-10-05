@@ -1,0 +1,112 @@
+# .github/workflows/setup-new-repo.yml
+# Este workflow se ejecuta en un repo "central" de la organización
+
+name: Setup Workflows in New Repos
+
+on:
+  repository_dispatch:
+    types: [new_repo_created]
+  workflow_dispatch:
+    inputs:
+      repo_name:
+        description: 'Nombre del repositorio'
+        required: true
+        type: string
+
+jobs:
+  setup-workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout repo central
+        uses: actions/checkout@v4
+      
+      - name: Configurar Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      
+      - name: Clonar nuevo repositorio
+        env:
+          GH_TOKEN: ${{ secrets.ORG_PAT_TOKEN }}
+          REPO_NAME: ${{ github.event.inputs.repo_name || github.event.client_payload.repo_name }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          git clone https://x-access-token:${GH_TOKEN}@github.com/${ORG_NAME}/${REPO_NAME}.git target-repo
+          cd target-repo
+      
+      - name: Copiar workflows
+        run: |
+          cd target-repo
+          
+          # Crear estructura de carpetas
+          mkdir -p .github/workflows
+          
+          # Copiar workflows desde el repo actual
+          cp ../workflows-templates/*.yml .github/workflows/
+          
+          # Copiar configuraciones adicionales
+          cp ../config-templates/.editorconfig . || true
+          cp ../config-templates/.luacheckrc . || true
+          cp ../config-templates/.eslintrc.json . || true
+      
+      - name: Commit y push
+        env:
+          GH_TOKEN: ${{ secrets.ORG_PAT_TOKEN }}
+        run: |
+          cd target-repo
+          git add .
+          git commit -m "🚀 Setup inicial: workflows y configuraciones" || echo "Nothing to commit"
+          git push origin main || git push origin master
+      
+      - name: Crear PR con los workflows (opcional)
+        env:
+          GH_TOKEN: ${{ secrets.ORG_PAT_TOKEN }}
+          REPO_NAME: ${{ github.event.inputs.repo_name || github.event.client_payload.repo_name }}
+          ORG_NAME: ${{ github.repository_owner }}
+        run: |
+          cd target-repo
+          git checkout -b setup/workflows
+          git push origin setup/workflows
+          
+          gh pr create \
+            --repo ${ORG_NAME}/${REPO_NAME} \
+            --title "🚀 Setup inicial: workflows y configuraciones" \
+            --body "Este PR agrega los workflows estándar de la organización" \
+            --base main
+
+---
+# ALTERNATIVA: Webhook Listener
+# Para ejecutar esto automáticamente cuando se crea un repo nuevo
+# Necesitas configurar un webhook en la organización que dispare este workflow
+
+name: Auto Detect New Repos
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Cada 6 horas
+  workflow_dispatch:
+
+jobs:
+  check-new-repos:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtener lista de repos
+        env:
+          GH_TOKEN: ${{ secrets.ORG_PAT_TOKEN }}
+        run: |
+          # Obtener repos creados en las últimas 6 horas
+          REPOS=$(gh repo list ${{ github.repository_owner }} \
+            --json name,createdAt \
+            --jq '.[] | select(.createdAt > (now - 21600 | todate)) | .name')
+          
+          echo "repos_found=$REPOS" >> $GITHUB_OUTPUT
+          
+          # Por cada repo nuevo, ejecutar el workflow de setup
+          for repo in $REPOS; do
+            gh workflow run setup-new-repo.yml \
+              -f repo_name=$repo \
+              --repo ${{ github.repository }}
+          done
