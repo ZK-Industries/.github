@@ -2,11 +2,22 @@ name: Code Style Check
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
+    # Sin especificar 'branches', se ejecuta para PRs a CUALQUIER rama
+  pull_request_target:
+    types: [opened, synchronize, reopened]
   push:
-    branches:
-      - main
-      - develop
+    # Sin especificar branches aquí, se ejecuta en TODOS los push
+    paths:
+      - '**.js'
+      - '**.ts'
+      - '**.lua'
+      - '**.py'
+      - '**.java'
+      - '**.c'
+      - '**.cpp'
+      - '**.css'
+      - '**.html'
 
 jobs:
   check-code-style:
