@@ -1,0 +1,145 @@
+name: Code Style Check
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  check-code-style:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Verificar tabs y espacios en blanco
+        id: style-check
+        run: |
+          echo "🔍 Verificando estilo de código..."
+          
+          # Inicializar contadores
+          TABS_INCORRECTAS=0
+          ESPACIOS_FINALES=0
+          LINEAS_VACIAS_FINALES=0
+          ERRORES=""
+          
+          # Buscar archivos de código (puedes ajustar las extensiones)
+          FILES=$(find . -type f \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" -o -name "*.py" -o -name "*.java" -o -name "*.c" -o -name "*.cpp" -o -name "*.css" -o -name "*.html" \) ! -path "*/node_modules/*" ! -path "*/.git/*" ! -path "*/dist/*" ! -path "*/build/*")
+          
+          for file in $FILES; do
+            # Verificar espacios en lugar de tabs (si el archivo usa indentación)
+            if grep -P '^\s*\K {4}' "$file" > /dev/null 2>&1; then
+              ESPACIOS=$(grep -nP '^\s*\K {4}' "$file" | wc -l)
+              if [ $ESPACIOS -gt 0 ]; then
+                TABS_INCORRECTAS=$((TABS_INCORRECTAS + ESPACIOS))
+                ERRORES="${ERRORES}\n❌ **${file}**: Contiene espacios en lugar de tabs (${ESPACIOS} líneas)"
+              fi
+            fi
+            
+            # Verificar espacios en blanco al final de líneas
+            if grep -P '\s+$' "$file" > /dev/null 2>&1; then
+              ESPACIOS_LINEA=$(grep -nP '\s+$' "$file" | wc -l)
+              if [ $ESPACIOS_LINEA -gt 0 ]; then
+                ESPACIOS_FINALES=$((ESPACIOS_FINALES + ESPACIOS_LINEA))
+                ERRORES="${ERRORES}\n⚠️  **${file}**: Contiene espacios en blanco al final de línea (${ESPACIOS_LINEA} líneas)"
+              fi
+            fi
+            
+            # Verificar múltiples líneas vacías al final del archivo
+            if [ -s "$file" ]; then
+              LINEAS_FINALES=$(tail -c 2 "$file" | od -An -tx1 | tr -d ' \n')
+              if [ "$LINEAS_FINALES" = "0a0a" ] || [ "$LINEAS_FINALES" = "0a0a0a" ]; then
+                LINEAS_VACIAS_FINALES=$((LINEAS_VACIAS_FINALES + 1))
+                ERRORES="${ERRORES}\n⚠️  **${file}**: Tiene líneas vacías extra al final del archivo"
+              fi
+            fi
+          done
+          
+          # Guardar resultados
+          echo "tabs_incorrectas=${TABS_INCORRECTAS}" >> $GITHUB_OUTPUT
+          echo "espacios_finales=${ESPACIOS_FINALES}" >> $GITHUB_OUTPUT
+          echo "lineas_vacias=${LINEAS_VACIAS_FINALES}" >> $GITHUB_OUTPUT
+          
+          # Guardar errores en archivo temporal
+          echo -e "${ERRORES}" > /tmp/errores.txt
+          
+          # Determinar si hay errores
+          if [ $TABS_INCORRECTAS -gt 0 ] || [ $ESPACIOS_FINALES -gt 0 ] || [ $LINEAS_VACIAS_FINALES -gt 0 ]; then
+            echo "tiene_errores=true" >> $GITHUB_OUTPUT
+            echo "✗ Se encontraron problemas de estilo"
+            exit 1
+          else
+            echo "tiene_errores=false" >> $GITHUB_OUTPUT
+            echo "✓ Verificación de estilo exitosa"
+          fi
+      
+      - name: Comentar en PR con errores encontrados
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const errores = fs.readFileSync('/tmp/errores.txt', 'utf8');
+            
+            const body = `## 🎨 Problemas de Estilo de Código Encontrados
+            
+            Tu código no cumple con las convenciones de estilo del proyecto:
+            
+            ${errores}
+            
+            ### 📋 Reglas de estilo:
+            - ✅ Usar **tabs** (tab size 4) para indentación
+            - ✅ No dejar **espacios en blanco** al final de las líneas
+            - ✅ Terminar archivos con **una sola línea vacía**
+            
+            ### 🔧 Cómo solucionarlo:
+            
+            **En VS Code:**
+            1. Instala la extensión "EditorConfig"
+            2. Agrega al archivo \`.editorconfig\`:
+            \`\`\`
+            [*]
+            indent_style = tab
+            indent_size = 4
+            trim_trailing_whitespace = true
+            insert_final_newline = true
+            \`\`\`
+            
+            **Manualmente:**
+            \`\`\`bash
+            # Convertir espacios a tabs
+            find . -name "*.js" -o -name "*.ts" | xargs sed -i 's/    /\t/g'
+            
+            # Eliminar espacios al final de líneas
+            find . -name "*.js" -o -name "*.ts" | xargs sed -i 's/[[:space:]]*$//'
+            \`\`\`
+            
+            Por favor corrige estos problemas y actualiza tu PR.`;
+            
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: body
+            });
+      
+      - name: Comentar éxito en PR
+        if: success() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '## ✅ Verificación de Estilo Exitosa\n\nTu código cumple con todas las convenciones de estilo del proyecto. ¡Buen trabajo! 🎉'
+            });
